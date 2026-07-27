@@ -80,7 +80,6 @@ tagged_df.select("comment_text", *TAGS.keys()).show(5, truncate=60)
 
 # COMMAND ----------
 
-from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from pyspark.sql.functions import udf
 from pyspark.sql.types import StructType, StructField, FloatType, StringType
 
@@ -93,8 +92,9 @@ sentiment_schema = StructType([
     StructField("label",    StringType()),  # "positive", "neutral", "negative"
 ])
 
-# UDF — runs VADER on each comment
+# UDF — import inside function so each worker loads it fresh (avoids serialization error)
 def analyze_sentiment(text):
+    from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
     if not text or len(text.strip()) == 0:
         return (0.0, 0.0, 1.0, 0.0, "neutral")
     analyzer = SentimentIntensityAnalyzer()
