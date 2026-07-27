@@ -80,63 +80,35 @@ tagged_df.select("comment_text", *TAGS.keys()).show(5, truncate=60)
 
 # COMMAND ----------
 
-from pyspark.sql.functions import udf
-from pyspark.sql.types import StructType, StructField, FloatType, StringType
-
-# Define sentiment schema
-sentiment_schema = StructType([
-    StructField("compound", FloatType()),   # -1.0 (most negative) to +1.0 (most positive)
-    StructField("positive", FloatType()),   # ratio of positive words
-    StructField("neutral",  FloatType()),   # ratio of neutral words
-    StructField("negative", FloatType()),   # ratio of negative words
-    StructField("label",    StringType()),  # "positive", "neutral", "negative"
-])
-
-# UDF — import inside function so each worker loads it fresh (avoids serialization error)
-def analyze_sentiment(text):
-    from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
-    if not text or len(text.strip()) == 0:
-        return (0.0, 0.0, 1.0, 0.0, "neutral")
-    analyzer = SentimentIntensityAnalyzer()
-    scores = analyzer.polarity_scores(text)
-    compound = scores["compound"]
-    if compound >= 0.05:
-        label = "positive"
-    elif compound <= -0.05:
-        label = "negative"
-    else:
-        label = "neutral"
-    return (compound, scores["pos"], scores["neu"], scores["neg"], label)
-
-sentiment_udf = udf(analyze_sentiment, sentiment_schema)
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+import pandas as pd
 
 # COMMAND ----------
 
-# Apply sentiment to each comment
-from pyspark.sql.functions import col
+# Collect to Pandas — safe for our dataset size (~2500 rows)
+# Avoids UDF serialization issues entirely
+pandas_df = tagged_df.toPandas()
 
-sentiment_df = tagged_df.withColumn("sentiment", sentiment_udf(col("comment_clean")))
+analyzer = SentimentIntensityAnalyzer()
 
-silver_df = sentiment_df.select(
-    "comment_id",
-    "video_id",
-    "video_title",
-    "stage",
-    "teams",
-    "comment_text",
-    "comment_clean",
-    "author",
-    "likes",
-    "published_at",
-    "ingested_at",
-    col("sentiment.compound").alias("sentiment_score"),
-    col("sentiment.positive").alias("sentiment_pos"),
-    col("sentiment.neutral").alias("sentiment_neu"),
-    col("sentiment.negative").alias("sentiment_neg"),
-    col("sentiment.label").alias("sentiment_label"),
-    *[col(c) for c in TAGS.keys()]
-)
+def get_sentiment(text):
+    if not text or len(str(text).strip()) == 0:
+        return pd.Series([0.0, 0.0, 1.0, 0.0, "neutral"])
+    scores = analyzer.polarity_scores(str(text))
+    compound = float(scores["compound"])
+    label = "positive" if compound >= 0.05 else "negative" if compound <= -0.05 else "neutral"
+    return pd.Series([compound, float(scores["pos"]), float(scores["neu"]), float(scores["neg"]), label])
 
+pandas_df[["sentiment_score","sentiment_pos","sentiment_neu","sentiment_neg","sentiment_label"]] = \
+    pandas_df["comment_clean"].apply(get_sentiment)
+
+print(f"Sentiment analysis complete: {len(pandas_df):,} rows")
+print(pandas_df[["comment_clean","sentiment_score","sentiment_label"]].head(5))
+
+# COMMAND ----------
+
+# Convert back to Spark DataFrame
+silver_df = spark.createDataFrame(pandas_df)
 silver_df.show(5, truncate=60)
 
 # COMMAND ----------
